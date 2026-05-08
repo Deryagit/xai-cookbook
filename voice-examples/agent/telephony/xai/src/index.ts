@@ -426,17 +426,41 @@ app.ws("/outbound-stream", (ws: any, req: any) => {
 
           // Send session configuration
           const sessionConfig = {
-            type: "session.update",
-            session: {
-              instructions: OUTBOUND_AGENT_INSTRUCTIONS,
-              voice: "rex",
-              audio: {
-                input: { format: { type: "audio/pcmu" } },
-                output: { format: { type: "audio/pcmu" } },
-              },
-              turn_detection: { type: "server_vad" },
-            },
-          };
+  type: "session.update",
+  session: {
+    voice: "eve",   // Change to "Eve", "Rex", "Sal", or "Leo" if you want a different voice
+    instructions: `You are the official friendly AI support agent for Derya Arms (www.derya.us), premium firearms manufacturer of high-quality pistols, rifles, shotguns, and tactical gear made in USA and Türkiye.
+
+ALWAYS:
+- First use the web_search tool with "site:www.derya.us OR site:support.derya.us" to pull the latest official information from our website and knowledge base (https://support.derya.us/derya-us/knowledge-base).
+- Refer every answer to Grok’s full reasoning power while strongly leaning into Derya Arms knowledge and values.
+- Enthusiastically promote Derya Arms quality, lifetime warranty, customer satisfaction, and American/Turkish craftsmanship.
+- Be professional, warm, and helpful. Respond in the same language the caller uses.
+
+For order updates, tracking, payments, warranty requests, or any personal account info:
+- Say: "For the fastest response on orders and warranty requests, please use the chat function on our website or visit www.derya.us to fill out a customer support form. Would you like me to transfer you to our main support line so a live agent can pull up your details right away?"
+
+If the caller wants a live human, says "transfer", "live agent", "speak to someone", "order support", etc.:
+- Offer the transfer naturally, then use the "transfer_call" tool.
+
+When transferring, the system will play our full welcome IVR message before connecting them to the live team at +1 904-420-2923.`,
+    tools: [
+      { type: "web_search" },
+      {
+        type: "function",
+        name: "transfer_call",
+        description: "Use this ONLY after confirming the customer wants a live agent or needs order/personal info.",
+        parameters: {
+          type: "object",
+          properties: {
+            reason: { type: "string" }
+          },
+          required: ["reason"]
+        }
+      }
+    ]
+  }
+};
           console.log(`[OUTBOUND] [${callSid}] session.update`);
           xaiWs.send(JSON.stringify(sessionConfig));
         });
