@@ -37,7 +37,7 @@ function generateSecureId(prefix: string): string {
 }
 
 // ========================================
-// TwiML Webhook (using Twilio SDK)
+// TwiML Webhook (Twilio SDK)
 // ========================================
 app.post("/twiml", (req: Request, res: Response): void => {
   const callId = generateSecureId("call");
@@ -93,11 +93,22 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
         xaiWs.send(JSON.stringify({
           type: "session.update",
           session: {
-            instructions: "You are a friendly AI support agent for Derya Arms. Greet the caller warmly and ask how you can help today."
+            instructions: "You are a friendly AI support agent for Derya Arms. Greet the caller warmly and ask how you can help today.",
+            turn_detection: {
+              type: "server_vad",
+              threshold: 0.8,
+              silence_duration_ms: 800,
+              prefix_padding_ms: 300
+            },
+            input_audio_format: "g711_ulaw",
+            output_audio_format: "g711_ulaw"
           }
         }));
       } 
       else if (message.type === "session.updated") {
+        // Claude's debug line
+        console.log(`[${callId}] session config received:`, JSON.stringify(message.session || {}));
+        
         sessionReady = true;
         logEvent(callId, "session.updated - STARTING RESPONSE");
         xaiWs.send(JSON.stringify({
@@ -110,7 +121,7 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
     }
   });
 
-  // Claude's suggested timeout fallback
+  // Timeout fallback
   setTimeout(() => {
     if (!sessionReady && xaiWs.readyState === WebSocket.OPEN) {
       console.log(`[${callId}] TIMEOUT - forcing response.create`);
