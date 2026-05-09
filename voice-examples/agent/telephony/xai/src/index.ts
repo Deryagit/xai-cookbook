@@ -86,7 +86,7 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
       logEvent(callId, message.type);
 
       if (message.type === "response.output_audio.delta" && message.delta && streamSid) {
-        tw.send({ event: "media", media: { payload: message.delta }, streamSid });
+        tw.send({ event: "media", streamSid, media: { payload: message.delta } });
       } 
       else if (message.type === "conversation.created") {
         logEvent(callId, "conversation.created - sending simple prompt");
@@ -100,10 +100,10 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
               silence_duration_ms: 800,
               prefix_padding_ms: 300
             },
-            input_audio_format: "g711_ulaw",
-            output_audio_format: "g711_ulaw",
-            input_sample_rate: 8000,
-            output_sample_rate: 8000
+            audio: {
+              input: { format: { type: "audio/pcmu" } },
+              output: { format: { type: "audio/pcmu" } }
+            }
           }
         }));
       } 
@@ -114,6 +114,9 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
           type: "response.create",
           response: { modalities: ["text", "audio"] }
         }));
+      } 
+      else if (message.type === "response.done" && streamSid) {
+        tw.send({ event: "mark", streamSid, mark: { name: "response-done" } });
       }
     } catch (e) {
       console.error(e);
