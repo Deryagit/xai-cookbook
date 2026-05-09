@@ -25,6 +25,23 @@ const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
 // ========================================
+// Tools
+// ========================================
+const tools = [
+  { type: "web_search" },
+  {
+    type: "function",
+    name: "transfer_call",
+    description: "Use this ONLY after confirming the customer wants a live agent or needs order/personal info.",
+    parameters: {
+      type: "object",
+      properties: { reason: { type: "string" } },
+      required: ["reason"]
+    }
+  }
+];
+
+// ========================================
 // Logging
 // ========================================
 function logEvent(callId: string, eventType: string, extra?: string) {
@@ -37,7 +54,7 @@ function generateSecureId(prefix: string): string {
 }
 
 // ========================================
-// TwiML Webhook (Twilio SDK)
+// TwiML Webhook
 // ========================================
 app.post("/twiml", (req: Request, res: Response): void => {
   const callId = generateSecureId("call");
@@ -57,6 +74,26 @@ app.post("/twiml", (req: Request, res: Response): void => {
 });
 
 // ========================================
+// Transfer Handler
+// ========================================
+async function handleTransfer(callSid: string) {
+  const targetNumber = "+19044202923";
+  try {
+    const VoiceResponse = twilio.twiml.VoiceResponse;
+    const response = new VoiceResponse();
+    response.say("You are being transferred back to our main support line. Please pick the option most applicable to your request, or press 0 to come back to me.");
+    response.dial(targetNumber);
+
+    await twilioClient.calls(callSid).update({
+      twiml: response.toString()
+    });
+    console.log(`[${callSid}] TRANSFER EXECUTED to ${targetNumber}`);
+  } catch (err) {
+    console.error("Transfer failed:", err);
+  }
+}
+
+// ========================================
 // Media Stream WebSocket
 // ========================================
 app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
@@ -65,9 +102,11 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
 
   const tw = new TwilioMediaStreamWebsocket(ws);
   let streamSid: string | null = null;
+  let callSidFromTwilio: string | null = null;
 
   tw.on("start", (msg: any) => {
     streamSid = msg.start.streamSid;
+    callSidFromTwilio = msg.start.callSid;
     logEvent(callId, "twilio.start");
   });
 
@@ -89,11 +128,19 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
         tw.send({ event: "media", streamSid, media: { payload: message.delta } });
       } 
       else if (message.type === "conversation.created") {
-        logEvent(callId, "conversation.created - sending simple prompt");
+        logEvent(callId, "conversation.created - sending full prompt");
         xaiWs.send(JSON.stringify({
           type: "session.update",
           session: {
-            instructions: "You are a friendly AI support agent for Derya Arms. Greet the caller warmly and ask how you can help today.",
+            instructions: `You are the official friendly AI support agent for Derya Arms (www.derya.us), premium firearms manufacturer of high-quality pistols, rifles, shotguns, and tactical gear made in Türkiye and the USA.
+ALWAYS:
+- First use the web_search tool with "site:www.derya.us OR site:support.derya.us" to pull the latest official information from our website and knowledge base.
+- Be professional, warm, and helpful. Respond in the same language the caller uses.
+For order updates, tracking, payments, warranty requests, or any personal account info:
+- Say: "For the fastest response on orders and warranty requests, please use the chat function on our website or visit www.derya.us to fill out a customer support form. Would you like me to transfer you to our main support line so a live agent can pull up your details right away?"
+If the caller wants a live human, says "transfer", "live agent", "speak to someone", "order support", etc.:
+- Offer the transfer naturally, then use the "transfer_call" tool.`,
+            tools: tools,   // ← Claude's critical fix
             turn_detection: {
               type: "server_vad",
               threshold: 0.8,
@@ -115,8 +162,11 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
           response: { modalities: ["text", "audio"] }
         }));
       } 
-      else if (message.type === "response.done" && streamSid) {
-        tw.send({ event: "mark", streamSid, mark: { name: "response-done" } });
+      else if (message.type === "response.output_item.done" && message.item?.name === "transfer_call" && callSidFromTwilio) {
+        await handleTransfer(callSidFromTwilio);
+      } 
+      else if (message.type === "response.function_call_arguments.done" && message.name === "transfer_call" && callSidFromTwilio) {
+        await handleTransfer(callSidFromTwilio);
       }
     } catch (e) {
       console.error(e);
