@@ -14,30 +14,51 @@ const app = wsInstance.app;
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
+// ========================================
+// Configuration
+// ========================================
 const XAI_API_KEY = process.env.XAI_API_KEY || "";
-const API_URL = process.env.API_URL || "wss://api.x.ai/v1/realtime";
+const API_URL = process.env.API_URL || "wss://api.x.ai/v1/realtime?model=grok-voice-think-fast-1.0";
 
-const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID || "",
-  process.env.TWILIO_AUTH_TOKEN || ""
-);
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
+const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-function logEvent(callId: string, eventType: string) {
-  console.log(`[${callId}] ${eventType}`);
+// ========================================
+// Logging
+// ========================================
+function logEvent(callId: string, eventType: string, extra?: string) {
+  if (extra) console.log(`[${callId}] ${eventType} - ${extra}`);
+  else console.log(`[${callId}] ${eventType}`);
 }
 
 function generateSecureId(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(16).toString("hex")}`;
 }
 
+// ========================================
+// TwiML Webhook (using Twilio SDK)
+// ========================================
 app.post("/twiml", (req: Request, res: Response): void => {
   const callId = generateSecureId("call");
-  if (!process.env.HOSTNAME) return res.status(500).send("HOSTNAME not set");
+  if (!process.env.HOSTNAME) {
+    res.status(500).send("HOSTNAME not set");
+    return;
+  }
   const hostname = process.env.HOSTNAME.replace(/^https?:\/\//, "");
   const streamUrl = `wss://${hostname}/media-stream/${callId}`;
-  res.type("text/xml").send(`<Response><Connect><Stream url="${streamUrl}" /></Connect></Response>`);
+
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+  const connect = response.connect();
+  connect.stream({ url: streamUrl });
+
+  res.type("text/xml").send(response.toString());
 });
 
+// ========================================
+// Media Stream WebSocket
+// ========================================
 app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
   const callId = req.params.callId;
   console.log(`\n[${callId}] === CALL STARTED ===`);
@@ -57,29 +78,49 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
   let sessionReady = false;
 
   xaiWs.on("open", () => logEvent(callId, "xai.websocket.open"));
+  xaiWs.on("error", (err) => console.error(`[${callId}] XAI ERROR:`, err));
 
   xaiWs.on("message", async (data: Buffer) => {
-    const message = JSON.parse(data.toString());
-    logEvent(callId, message.type);   // ← logs EVERY message from xAI
+    try {
+      const message = JSON.parse(data.toString());
+      logEvent(callId, message.type);
 
-    if (message.type === "response.output_audio.delta" && message.delta && streamSid) {
-      tw.send({ event: "media", media: { payload: message.delta }, streamSid });
-    } 
-    else if (message.type === "conversation.created") {
-      xaiWs.send(JSON.stringify({
-        type: "session.update",
-        session: {
-          voice: "alloy",
-          instructions: "You are a friendly assistant. Say 'Hello, how can I help you today?'"
-        }
-      }));
-    } 
-    else if (message.type === "session.updated") {
-      sessionReady = true;
-      logEvent(callId, "session.updated - STARTING RESPONSE");
-      xaiWs.send(JSON.stringify({ type: "response.create" }));
+      if (message.type === "response.output_audio.delta" && message.delta && streamSid) {
+        tw.send({ event: "media", media: { payload: message.delta }, streamSid });
+      } 
+      else if (message.type === "conversation.created") {
+        logEvent(callId, "conversation.created - sending simple prompt");
+        xaiWs.send(JSON.stringify({
+          type: "session.update",
+          session: {
+            instructions: "You are a friendly AI support agent for Derya Arms. Greet the caller warmly and ask how you can help today."
+          }
+        }));
+      } 
+      else if (message.type === "session.updated") {
+        sessionReady = true;
+        logEvent(callId, "session.updated - STARTING RESPONSE");
+        xaiWs.send(JSON.stringify({
+          type: "response.create",
+          response: { modalities: ["text", "audio"] }
+        }));
+      }
+    } catch (e) {
+      console.error(e);
     }
   });
+
+  // Claude's suggested timeout fallback
+  setTimeout(() => {
+    if (!sessionReady && xaiWs.readyState === WebSocket.OPEN) {
+      console.log(`[${callId}] TIMEOUT - forcing response.create`);
+      sessionReady = true;
+      xaiWs.send(JSON.stringify({
+        type: "response.create",
+        response: { modalities: ["text", "audio"] }
+      }));
+    }
+  }, 5000);
 
   tw.on("media", (msg: any) => {
     if (msg.media.track === "inbound" && sessionReady && xaiWs.readyState === WebSocket.OPEN) {
@@ -94,5 +135,8 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
   xaiWs.on("close", () => ws.close());
 });
 
+// Start server
 const port = process.env.PORT || 8080;
-app.listen(port, () => console.log(`Server running on port ${port}`));
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
