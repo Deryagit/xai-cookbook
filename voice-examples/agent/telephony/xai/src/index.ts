@@ -14,35 +14,22 @@ const app = wsInstance.app;
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// ========================================
-// Configuration
-// ========================================
 const XAI_API_KEY = process.env.XAI_API_KEY || "";
 const API_URL = process.env.API_URL || "wss://api.x.ai/v1/realtime";
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-// ========================================
-// Tools
-// ========================================
 const tools = [
   { type: "web_search" },
   {
     type: "function",
     name: "transfer_call",
-    description: "Use this ONLY after confirming the customer wants a live agent or needs order/personal info.",
-    parameters: {
-      type: "object",
-      properties: { reason: { type: "string" } },
-      required: ["reason"]
-    }
+    description: "Use this ONLY after confirming the customer wants a live agent.",
+    parameters: { type: "object", properties: { reason: { type: "string" } }, required: ["reason"] }
   }
 ];
 
-// ========================================
-// Logging
-// ========================================
 function logEvent(callId: string, eventType: string, extra?: string) {
   if (extra) console.log(`[${callId}] ${eventType} - ${extra}`);
   else console.log(`[${callId}] ${eventType}`);
@@ -52,45 +39,27 @@ function generateSecureId(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(16).toString("hex")}`;
 }
 
-// ========================================
-// TwiML Webhook
-// ========================================
 app.post("/twiml", (req: Request, res: Response): void => {
   const callId = generateSecureId("call");
-
   if (!process.env.HOSTNAME) {
     res.status(500).send("HOSTNAME not set");
     return;
   }
-
   const hostname = process.env.HOSTNAME.replace(/^https?:\/\//, "");
   const streamUrl = `wss://${hostname}/media-stream/${callId}`;
-
   const twiml = `<Response><Connect><Stream url="${streamUrl}" /></Connect></Response>`;
   res.type("text/xml").send(twiml);
 });
 
-// ========================================
-// Transfer Handler
-// ========================================
 async function handleTransfer(callSid: string) {
   const targetNumber = "+19044202923";
   try {
     await twilioClient.calls(callSid).update({
-      twiml: `<Response>
-        <Say>You are being transferred back to our main support line. Please pick the option most applicable to your request, or press 0 to come back to me.</Say>
-        <Dial>${targetNumber}</Dial>
-      </Response>`
+      twiml: `<Response><Say>Transferring you now...</Say><Dial>${targetNumber}</Dial></Response>`
     });
-    console.log(`[${callSid}] TRANSFER EXECUTED to ${targetNumber}`);
-  } catch (err) {
-    console.error("Transfer failed:", err);
-  }
+  } catch (err) { console.error(err); }
 }
 
-// ========================================
-// Media Stream WebSocket
-// ========================================
 app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
   const callId = req.params.callId;
   console.log(`\n[${callId}] === CALL STARTED ===`);
@@ -116,31 +85,17 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
   xaiWs.on("message", async (data: Buffer) => {
     try {
       const message = JSON.parse(data.toString());
-
-      if (message.type !== "response.output_audio.delta" && message.type !== "input_audio_buffer.append") {
-        logEvent(callId, message.type);
-      }
+      logEvent(callId, message.type);
 
       if (message.type === "response.output_audio.delta" && message.delta && streamSid) {
         tw.send({ event: "media", media: { payload: message.delta }, streamSid });
       } 
       else if (message.type === "conversation.created") {
-        logEvent(callId, "conversation.created - SENDING DERYA ARMS PROMPT");
-
         const sessionConfig = {
           type: "session.update",
           session: {
             voice: "alloy",
-            instructions: `You are the official friendly AI support agent for Derya Arms (www.derya.us), premium firearms manufacturer of high-quality pistols, rifles, shotguns, and tactical gear made in Türkiye and the USA.
-ALWAYS:
-- First use the web_search tool with "site:www.derya.us OR site:support.derya.us" to pull the latest official information from our website and knowledge base.
-- Refer every answer to Grok’s full reasoning power while strongly leaning into Derya Arms knowledge and values.
-- Enthusiastically promote Derya Arms quality, lifetime warranty, customer satisfaction, and American/Turkish craftsmanship.
-- Be professional, warm, and helpful. Respond in the same language the caller uses.
-For order updates, tracking, payments, warranty requests, or any personal account info:
-- Say: "For the fastest response on orders and warranty requests, please use the chat function on our website or visit www.derya.us to fill out a customer support form. Would you like me to transfer you to our main support line so a live agent can pull up your details right away?"
-If the caller wants a live human, says "transfer", "live agent", "speak to someone", "order support", etc.:
-- Offer the transfer naturally, then use the "transfer_call" tool.`,
+            instructions: "You are a friendly customer support agent for Derya Arms. Be helpful and professional.",
             tools: tools
           }
         };
@@ -151,13 +106,11 @@ If the caller wants a live human, says "transfer", "live agent", "speak to someo
         logEvent(callId, "session.updated - STARTING RESPONSE");
         xaiWs.send(JSON.stringify({ type: "response.create" }));
       } 
-      else if (message.type === "response.output_item.done" && message.item?.type === "function_call") {
-        if (message.item.name === "transfer_call" && callSidFromTwilio) {
-          await handleTransfer(callSidFromTwilio);
-        }
+      else if (message.type === "response.output_item.done" && message.item?.name === "transfer_call" && callSidFromTwilio) {
+        await handleTransfer(callSidFromTwilio);
       }
     } catch (e) {
-      console.error(e);
+      console.error("Message error:", e);
     }
   });
 
@@ -174,7 +127,6 @@ If the caller wants a live human, says "transfer", "live agent", "speak to someo
   xaiWs.on("close", () => ws.close());
 });
 
-// Start server
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
