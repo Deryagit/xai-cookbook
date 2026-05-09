@@ -132,19 +132,20 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
         xaiWs.send(JSON.stringify({
           type: "session.update",
           session: {
-            instructions: `You are the official friendly AI support agent for Derya Arms (www.derya.us), premium firearms manufacturer of high-quality pistols, rifles, shotguns, and tactical gear made in Türkiye and the USA.
+            instructions: `You are the official friendly AI support agent for Derya Arms (www.derya.us).
+Be concise. Keep responses short and natural (1-2 sentences max).
 ALWAYS:
-- First use the web_search tool with "site:www.derya.us OR site:support.derya.us" to pull the latest official information from our website and knowledge base.
+- First use the web_search tool with "site:www.derya.us OR site:support.derya.us".
 - Be professional, warm, and helpful. Respond in the same language the caller uses.
 For order updates, tracking, payments, warranty requests, or any personal account info:
 - Say: "For the fastest response on orders and warranty requests, please use the chat function on our website or visit www.derya.us to fill out a customer support form. Would you like me to transfer you to our main support line so a live agent can pull up your details right away?"
 If the caller wants a live human, says "transfer", "live agent", "speak to someone", "order support", etc.:
 - Offer the transfer naturally, then use the "transfer_call" tool.`,
-            tools: tools,   // ← Claude's critical fix
+            tools: tools,
             turn_detection: {
               type: "server_vad",
-              threshold: 0.8,
-              silence_duration_ms: 800,
+              threshold: 0.5,
+              silence_duration_ms: 400,
               prefix_padding_ms: 300
             },
             audio: {
@@ -167,6 +168,11 @@ If the caller wants a live human, says "transfer", "live agent", "speak to someo
       } 
       else if (message.type === "response.function_call_arguments.done" && message.name === "transfer_call" && callSidFromTwilio) {
         await handleTransfer(callSidFromTwilio);
+      } 
+      // ← Claude's barge-in fix
+      else if (message.type === "input_audio_buffer.speech_started" && streamSid) {
+        tw.send({ event: "clear", streamSid });
+        logEvent(callId, "barge-in detected - clearing audio");
       }
     } catch (e) {
       console.error(e);
