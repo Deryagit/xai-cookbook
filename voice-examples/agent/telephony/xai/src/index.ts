@@ -101,14 +101,13 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
               prefix_padding_ms: 300
             },
             input_audio_format: "g711_ulaw",
-            output_audio_format: "g711_ulaw"
+            output_audio_format: "g711_ulaw",
+            input_sample_rate: 8000,
+            output_sample_rate: 8000
           }
         }));
       } 
       else if (message.type === "session.updated") {
-        // Claude's debug line
-        console.log(`[${callId}] session config received:`, JSON.stringify(message.session || {}));
-        
         sessionReady = true;
         logEvent(callId, "session.updated - STARTING RESPONSE");
         xaiWs.send(JSON.stringify({
@@ -120,18 +119,6 @@ app.ws("/media-stream/:callId", (ws: WebSocket, req: Request) => {
       console.error(e);
     }
   });
-
-  // Timeout fallback
-  setTimeout(() => {
-    if (!sessionReady && xaiWs.readyState === WebSocket.OPEN) {
-      console.log(`[${callId}] TIMEOUT - forcing response.create`);
-      sessionReady = true;
-      xaiWs.send(JSON.stringify({
-        type: "response.create",
-        response: { modalities: ["text", "audio"] }
-      }));
-    }
-  }, 5000);
 
   tw.on("media", (msg: any) => {
     if (msg.media.track === "inbound" && sessionReady && xaiWs.readyState === WebSocket.OPEN) {
